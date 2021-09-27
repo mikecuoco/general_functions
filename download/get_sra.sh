@@ -7,7 +7,6 @@
 # $1 - Accession list of SRA files
 # $2 - Number of threads to use for fasterq-dump (dflt is 6)
 # TODO: Automate script more for future use (e.g. create file structure)
-# TODO: Automatically disable sra caching
 # TODO: Check for correct version of sra-tools
 
 set -e  
@@ -22,7 +21,7 @@ fi
 DIR="$( cd "$( dirname "$1" )" && pwd )"
 ACC_FILE=$1
 THREADS=$2
-LOG="../failed_acc.txt"
+FAIL_LOG="../failed_acc.log"
 
 # enable conda environment if needed
 env='data'
@@ -35,14 +34,15 @@ if ! command -v 'prefetch' &>/dev/null && \
     conda activate $env
 fi
 
+# disable caching to home folder, good practice and especially important if home folder has low storage
+vdb-config --prefetch-to-cwd
+
 # create dir for fastq files and enter
 mkdir -p raw_fastq 
 cd raw_fastq
 
 # Clear log before each run
-if [[ -e $LOG ]]; then
-  rm $LOG
-fi
+ls $FAIL_LOG && rm -f $FAIL_LOG
 
 # setup numeric variables
 COUNTER=0
@@ -53,14 +53,14 @@ while read -r ACC; do
   let COUNTER=COUNTER+1 
 
   # check for existance of file
-  if [[ -e ${ACC}*.fastq.gz ]]; then 
-     printf "Skipping $ACC since $(ls ${ACC}*.fastq.gz) exists...\n"
+  if ls ${ACC}*.fastq.gz 1> /dev/null 2>&1; then
+    printf "\n\e[0;35mSkipping $ACC since $(find ${ACC}*.fastq.gz -printf '%f ') exists...\e[0m\n"
   else
     # print in purple
     printf "\n\e[0;35mDownloading and unpacking $ACC ... [$COUNTER/$TOTAL] \e[0m"
 
     # use command group to store exit code  
-    { prefetch -p $ACC && vdb-validate $ACC && fasterq-dump $ACC --split-files -f -e $THREADS -p && gzip $ACC*fastq && rm -rf $ACC; }
+    { prefetch -p $ACC && vdb-validate $ACC && fasterq-dump $ACC --split-files -f -e $THREADS -p && pigz -p $THREADS $ACC*.fastq && rm -rf $ACC > $ACC.out; }
 
     if [ $? -eq 0 ]; then
       # print message in green
@@ -68,7 +68,7 @@ while read -r ACC; do
     else
       # print message in red
       printf "\e[0;31m[✖] $ACC downloading and unpacking failed \e[0m\n"
-      echo "$ACC" >> $LOG
+      echo "$ACC" >> $FAIL_LOG
     fi
   fi
 done < ../$ACC_FILE
