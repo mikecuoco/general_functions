@@ -15,41 +15,43 @@ require(DESeq2)
 #' @param coldata, a data.frame with the following columns: files, names, ...
 #' @param se.obj, a logical to indicate whether to return data in RangedSummarizedExperiment format
 #' @param deseq.obj, a logical to indicate whether to return data in DESeq2 format
-read_rsem_genes <- function(coldata, se.obj = TRUE, deseq.obj = FALSE){
+read_rsem_genes <- function(coldata, deseq.obj = TRUE, filter.genes.by = NULL){
     
-    # catch argument error
-    if (se.obj & deseq.obj){
-        stop("Must specify either se.obj or deseq.obj, but not both")
-    }
-
-    # read gtf file
-    gtf = "/raidixshare_logg01/mcuoco/references/Homo_sapiens/GENCODE/gencode.v39.annotation.gtf.gz"
+    # read gtf file, slow! 
+    # TODO make this faster
+    gtf = "/raidixshare_logg01/mcuoco/references/Homo_sapiens/GENCODE/gencode.v39.basic.annotation.gtf.gz"
     id2name = rtracklayer::readGFF(gtf) %>%
         tibble::as_tibble() %>% 
-        dplyr::filter(type == "gene", gene_type %in% c("protein_coding","lncRNA")) %>%
+        dplyr::filter(type == "gene") %>%
         dplyr::select(gene_id, gene_name, gene_type) %>%
         dplyr::distinct() 
+    if (!is.null(filter.genes.by)){
+        message(paste0("Filtering genes by: ", filter.genes.by))
+        id2name = id2name %>% 
+            dplyr::filter(gene_type %in% filter.genes.by)
+    }
     gencode = GenomicFeatures::makeTxDbFromGFF(gtf) %>%
         GenomicFeatures::genes() 
-    gencode = gencode[id2name$gene_id] 
+    gencode = gencode[id2name$gene_id] # sort and filter
     gencode$gene_name = id2name$gene_name
     gencode$gene_type = id2name$gene_type
     
     # read rsem counts with tximeta, saving to RangedSummarizedExperiment 
-    se = tximeta::tximeta(coldata, type = "rsem", txIn = F, txOut = F)
-    se = se[rownames(assays(se)[["counts"]]) %in% gencode$gene_id,]
+    coldata[sapply(coldata, is.character)] = lapply(coldata[sapply(coldata, is.character)], as.factor)
+    se = tximeta::tximeta(coldata, type = "rsem", txIn = F, txOut = F, ignoreTxVersion = TRUE, lengthCol = NA)
+    se = se[rownames(assays(se)[["counts"]]) %in% gencode$gene_id,] # filter
+    se = se[match(rownames(assays(se)[["counts"]]), gencode$gene_id),] # sort
     rowRanges(se) <- gencode
 
-    # Remove zero-length genes and return as DESeq2 object
-    if (deseq.obj) {
+    # compute library size
+    se$lib.size = colSums(assays(se)[["counts"]])
+
+    if (deseq.obj) { # Remove zero-length genes and return as DESeq2 object
         zero_length_genes = se@rowRanges$gene_id[apply(assays(se)[['length']], 1, min) == 0]
         se = se[!se@rowRanges$gene_id %in% zero_length_genes,]
         dds = DESeq2::DESeqDataSet(se, design = ~ 1)
         return(dds)
-    }
-
-    # return as RangedSummarizedExperiment
-    if (se.obj) {
+    } else { # return as RangedSummarizedExperiment
         return(se)
     }
    
